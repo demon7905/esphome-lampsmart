@@ -127,12 +127,10 @@ void ble_whiten(uint8_t *buf, size_t start, size_t len, uint8_t seed) {
     if (i >= start) {
       buf[i - start] ^= b;
     }
-    //ESP_LOGD(TAG, "%0x", b);
   }
 }
 
 uint8_t reverse_byte(uint8_t x) {
-
   x = ((x & 0x55) << 1) | ((x & 0xAA) >> 1);
   x = ((x & 0x33) << 2) | ((x & 0xCC) >> 2);
   x = ((x & 0x0F) << 4) | ((x & 0xF0) >> 4);
@@ -141,8 +139,17 @@ uint8_t reverse_byte(uint8_t x) {
 
 void LampSmartProLight::setup() {
 #ifdef USE_API
-  register_service(&LampSmartProLight::on_pair, light_state_ ? "pair_" + light_state_->get_object_id() : "pair");
-  register_service(&LampSmartProLight::on_unpair, light_state_ ? "unpair_" + light_state_->get_object_id() : "unpair");
+  // ESPHome 2026.x: get_object_id() removed from LightState
+  std::string suffix;
+  if (light_state_ != nullptr) {
+    suffix = "_" + light_state_->get_name();
+    for (char &c : suffix) {
+      if (c == ' ' || c == '-') c = '_';
+      else c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+    }
+  }
+  register_service(&LampSmartProLight::on_pair, "pair" + suffix);
+  register_service(&LampSmartProLight::on_unpair, "unpair" + suffix);
 #endif
   this->queue_ = this->parent_;
 }
@@ -162,7 +169,6 @@ void LampSmartProLight::write_state(light::LightState *state) {
   if (!cwf && !wwf) {
     send_packet(CMD_TURN_OFF, 0, 0);
     _is_off = true;
-
     return;
   }
 
@@ -173,7 +179,6 @@ void LampSmartProLight::write_state(light::LightState *state) {
     if (cwf > 0.000001) {
       cwi = min_brightness_;
     }
-    
     if (wwf > 0.000001) {
       wwi = min_brightness_;
     }
@@ -195,7 +200,7 @@ void LampSmartProLight::dump_config() {
   ESP_LOGCONFIG(TAG, "  Warm White Temperature: %f mireds", warm_white_temperature_);
   ESP_LOGCONFIG(TAG, "  Constant Brightness: %s", constant_brightness_ ? "true" : "false");
   ESP_LOGCONFIG(TAG, "  Minimum Brightness: %d", min_brightness_);
-  ESP_LOGCONFIG(TAG, "  Transmission Duration: %d millis", tx_duration_);
+  ESP_LOGCONFIG(TAG, "  Transmission Duration: %lu millis", (unsigned long) tx_duration_);
 }
 
 void LampSmartProLight::on_pair() {
@@ -223,7 +228,7 @@ void sign_packet_v3(adv_data_v3_t* packet) {
   memcpy(aes_in, &(packet->raw[8]), 16);
   mbedtls_aes_crypt_ecb(&aes_ctx, ESP_AES_ENCRYPT, aes_in, aes_out);
   mbedtls_aes_free(&aes_ctx);
-  packet->signature_v3 = ((uint16_t*) aes_out)[0]; 
+  packet->signature_v3 = ((uint16_t*) aes_out)[0];
   if (packet->signature_v3 == 0) {
       packet->signature_v3 = 0xffff;
   }
@@ -254,9 +259,10 @@ size_t LampSmartProCommand::build_packet_v3(uint8_t* buf) {
   }
   v2_whiten(&packet->raw[9], 0x12, (uint8_t) seed, 0);
   packet->crc16 = v2_crc16_ccitt(&packet->raw[7], 0x16, ~seed);
-  
+
   return sizeof(*packet);
 }
+
 size_t LampSmartProCommand::build_packet_v1(uint8_t* buf, size_t base) {
   uint16_t seed = (uint16_t) rand() % 65525;
 
@@ -264,14 +270,14 @@ size_t LampSmartProCommand::build_packet_v1(uint8_t* buf, size_t base) {
   *packet = (adv_data_v1_t) {{
       .prefix = {0xAA, 0x98, 0x43, 0xAF, 0x0B, 0x46, 0x46, 0x46},
       .command = this->cmd_,
-      .group_idx = static_cast<uint16_t>(this->identifier_ & 0xF0FF), // group_index is zero for now
+      .group_idx = static_cast<uint16_t>(this->identifier_ & 0xF0FF),
       .channel1 = this->par1_,
       .channel2 = this->par2_,
       .channel3 = 0,
       .tx_count = this->tx_count_,
       .outs = 0,
-      .src = static_cast<uint8_t>(seed ^ 1), //
-      .r2 = static_cast<uint8_t>(seed ^ 1),  // mimics IR remote behavior
+      .src = static_cast<uint8_t>(seed ^ 1),
+      .r2 = static_cast<uint8_t>(seed ^ 1),
       .seed = htons(seed),
       .crc16 = 0,
   }};
@@ -283,54 +289,52 @@ size_t LampSmartProCommand::build_packet_v1(uint8_t* buf, size_t base) {
   }
 
   packet->crc16 = htons(v2_crc16_ccitt(&packet->raw[8], 12, ~seed));
-  
+
   return sizeof(*packet);
 }
 
 size_t LampSmartProCommand::build_packet_v1a(uint8_t* buf) {
-
   uint8_t header[] = {0x02, 0x01, 0x02, 0x1B, 0x03, 0x77, 0xF8};
   const size_t base = 7;
   const size_t size = 31;
-  
+
   for (size_t i=0; i<sizeof(header); i++) {
     buf[i] = header[i];
   }
   build_packet_v1(buf, base);
-  
+
   uint16_t* crc16_2 = (uint16_t*) &buf[29];
   *crc16_2 = htons(v2_crc16_ccitt(&buf[base+8], 14, v2_crc16_ccitt(&buf[base+1], 5, 0xffff)));
   for (size_t i=base; i < size; i++) {
     buf[i] = reverse_byte(buf[i]);
   }
   ble_whiten(&buf[base], 8+base, size-base, 83);
-  
+
   return size;
 }
 
 size_t LampSmartProCommand::build_packet_v1b(uint8_t* buf) {
-
   uint8_t header[] = {0x02, 0x01, 0x02, 0x1B, 0x03, 0xF9, 0x08, 0x49};
   const size_t base = 8;
   const size_t size = 31;
-  
+
   for (size_t i=0; i<sizeof(header); i++) {
     buf[i] = header[i];
   }
   build_packet_v1(buf, base);
-  
+
   buf[30] = 0xaa;
   for (size_t i=base; i < size; i++) {
     buf[i] = reverse_byte(buf[i]);
   }
   ble_whiten(&buf[base], 8+base, size-base, 83);
-  
+
   return size;
 }
 
 size_t LampSmartProCommand::build_packet(uint8_t* buf) {
   size_t plen = 0;
-  
+
   switch (this->variant_) {
     case VARIANT_3:
     case VARIANT_2:
@@ -343,12 +347,11 @@ size_t LampSmartProCommand::build_packet(uint8_t* buf) {
       plen = this->build_packet_v1b(buf);
       break;
   }
-  
+
   return plen;
-} 
+}
 
 void LampSmartProLight::send_packet(uint16_t cmd, uint8_t cold, uint8_t warm) {
-
   if (++this->tx_count_ == 0) {
     this->tx_count_ = 1;
   }
@@ -359,7 +362,7 @@ void LampSmartProLight::send_packet(uint16_t cmd, uint8_t cold, uint8_t warm) {
   command->set_par2(this->reversed_ ? cold : warm);
   command->set_tx_count(this->tx_count_);
   command->set_tx_duration(this->tx_duration_);
-  
+
   this->queue_->put(command);
 }
 
@@ -376,7 +379,6 @@ void LampSmartProQueue::put(LampSmartProCommand* command) {
 }
 
 void LampSmartProQueue::loop() {
-
   static LampSmartProCommand *command;
   if (!this->parent_->is_active()) {
     ESP_LOGD(TAG, "Cannot proceed while ESP32BLE is disabled.");
@@ -391,7 +393,7 @@ void LampSmartProQueue::loop() {
       return;
     }
   }
-  
+
   if (xQueueReceive(this->commands_, &command, 0) == pdTRUE) {
     uint8_t packet[MAX_PACKET_LEN];
     size_t packet_len = command->build_packet(packet);
