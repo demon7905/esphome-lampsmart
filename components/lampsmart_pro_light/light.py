@@ -17,7 +17,7 @@ from esphome.const import (
 
 from . import LampSmartProQueue, CONF_QUEUE_ID
 
-AUTO_LOAD = ["esp32_ble", "."]
+AUTO_LOAD = ["esp32_ble"]
 DEPENDENCIES = ["esp32", "lampsmart_pro_light"]
 
 lampsmartpro_ns = cg.esphome_ns.namespace("lampsmartpro")
