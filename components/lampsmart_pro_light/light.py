@@ -1,6 +1,6 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
-from esphome.components import light
+from esphome.components import light, esp32_ble
 from esphome import automation
 from esphome.const import (
     CONF_DURATION,
@@ -15,12 +15,11 @@ from esphome.const import (
     PLATFORM_ESP32,
 )
 
-from . import LampSmartProQueue, CONF_QUEUE_ID
+from . import lampsmartpro_ns, LampSmartProQueue, CONF_QUEUE_ID
 
 AUTO_LOAD = ["esp32_ble"]
-DEPENDENCIES = ["esp32", "lampsmart_pro_light"]
+DEPENDENCIES = ["esp32"]
 
-lampsmartpro_ns = cg.esphome_ns.namespace("lampsmartpro")
 LampSmartProLight = lampsmartpro_ns.class_(
     "LampSmartProLight",
     cg.Component,
@@ -46,7 +45,6 @@ ACTION_ON_UNPAIR_SCHEMA = cv.All(
     )
 )
 
-# Match C++ enum name "Variant"
 LampSmartProVariant = lampsmartpro_ns.enum("Variant")
 LAMP_VARIANTS = {
     "v3": LampSmartProVariant.VARIANT_3,
@@ -65,7 +63,8 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_CONSTANT_BRIGHTNESS, default=False): cv.boolean,
             cv.Optional(CONF_REVERSED, default=False): cv.boolean,
             cv.Optional(CONF_MIN_BRIGHTNESS, default=0x7): cv.hex_uint8_t,
-            cv.GenerateID(CONF_QUEUE_ID): cv.use_id(LampSmartProQueue),
+            cv.GenerateID(CONF_QUEUE_ID): cv.declare_id(LampSmartProQueue),
+            cv.GenerateID(esp32_ble.CONF_BLE_ID): cv.use_id(esp32_ble.ESP32BLE),
             cv.Optional(CONF_VARIANT, default="v3"): cv.enum(LAMP_VARIANTS, lower=True),
         }
     ),
@@ -78,26 +77,24 @@ CONFIG_SCHEMA = cv.All(
 
 
 async def to_code(config):
-    # Ensure BLE advertising support is compiled in
     cg.add_define("USE_ESP32_BLE_ADVERTISING")
 
-    var = cg.new_Pvariable(config[CONF_OUTPUT_ID])
+    queue = cg.new_Pvariable(config[CONF_QUEUE_ID])
+    ble = await cg.get_variable(config[esp32_ble.CONF_BLE_ID])
+    cg.add(queue.set_parent(ble))
+    await cg.register_component(queue, config)
 
-    parent = await cg.get_variable(config[CONF_QUEUE_ID])
-    cg.add(var.set_parent(parent))
+    var = cg.new_Pvariable(config[CONF_OUTPUT_ID])
+    cg.add(var.set_parent(queue))
 
     await cg.register_component(var, config)
     await light.register_light(var, config)
 
     if CONF_COLD_WHITE_COLOR_TEMPERATURE in config:
-        cg.add(
-            var.set_cold_white_temperature(config[CONF_COLD_WHITE_COLOR_TEMPERATURE])
-        )
+        cg.add(var.set_cold_white_temperature(config[CONF_COLD_WHITE_COLOR_TEMPERATURE]))
 
     if CONF_WARM_WHITE_COLOR_TEMPERATURE in config:
-        cg.add(
-            var.set_warm_white_temperature(config[CONF_WARM_WHITE_COLOR_TEMPERATURE])
-        )
+        cg.add(var.set_warm_white_temperature(config[CONF_WARM_WHITE_COLOR_TEMPERATURE]))
 
     cg.add(var.set_constant_brightness(config[CONF_CONSTANT_BRIGHTNESS]))
     cg.add(var.set_reversed(config[CONF_REVERSED]))
@@ -106,8 +103,12 @@ async def to_code(config):
     cg.add(var.set_variant(config[CONF_VARIANT]))
 
 
-@automation.register_action("lampsmartpro.pair", PairAction, ACTION_ON_PAIR_SCHEMA)
-@automation.register_action("lampsmartpro.unpair", UnpairAction, ACTION_ON_UNPAIR_SCHEMA)
+@automation.register_action(
+    "lampsmartpro.pair", PairAction, ACTION_ON_PAIR_SCHEMA, synchronous=True
+)
+@automation.register_action(
+    "lampsmartpro.unpair", UnpairAction, ACTION_ON_UNPAIR_SCHEMA, synchronous=True
+)
 async def lampsmartpro_pair_to_code(config, action_id, template_arg, args):
     parent = await cg.get_variable(config[CONF_ID])
     return cg.new_Pvariable(action_id, template_arg, parent)
