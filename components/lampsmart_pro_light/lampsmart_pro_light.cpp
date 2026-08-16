@@ -1,5 +1,7 @@
 #include "lampsmart_pro_light.h"
 #include "esphome/core/log.h"
+#include <cctype>
+#include <string>
 
 #ifdef USE_ESP32
 
